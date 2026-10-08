@@ -340,7 +340,7 @@ public struct InlineSnapshotSyntaxDescriptor: Hashable, Sendable {
         column: UInt
     ) {
         var trailingClosureLine: Int?
-        if let testSource = try? testSource(file: File(path: filePath)) {
+        if let testSource = try? failureTestSources.source(for: File(path: filePath)) {
             let visitor = SnapshotVisitor(
                 functionCallLine: Int(line),
                 functionCallColumn: Int(column),
@@ -410,6 +410,26 @@ private func testSource(file: File) throws -> TestSource {
         sourceFile: sourceFile,
         sourceLocationConverter: SourceLocationConverter(fileName: filePath, tree: sourceFile)
     )
+}
+
+// NB: Parse each test file once when locating failures. Files are only rewritten at exit, which
+//     reads them fresh.
+private let failureTestSources = TestSourceCache()
+
+private final class TestSourceCache: @unchecked Sendable {
+    private var sources: [File: TestSource] = [:]
+    private let lock = NSLock()
+
+    func source(for file: File) throws -> TestSource {
+        lock.lock()
+        defer { lock.unlock() }
+        if let source = sources[file] {
+            return source
+        }
+        let source = try testSource(file: file)
+        sources[file] = source
+        return source
+    }
 }
 
 private func writeInlineSnapshots() {
