@@ -512,7 +512,10 @@ public struct SnapshotAssertionOptions: Sendable {
                 optionalDiffable = b
                 tookSnapshot.fulfill()
             }
-            let result = XCTWaiter.wait(for: [tookSnapshot], timeout: options.timeout)
+            // NB: Most strategies complete synchronously, so only wait when the snapshot is still pending.
+            let result = optionalDiffable != nil
+                ? .completed
+                : XCTWaiter.wait(for: [tookSnapshot], timeout: options.timeout)
             switch result {
                 case .completed:
                     break

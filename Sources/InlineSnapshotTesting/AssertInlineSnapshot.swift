@@ -95,7 +95,11 @@ import XCTest
                     actual = $0
                     expectation.fulfill()
                 }
-                switch XCTWaiter.wait(for: [expectation], timeout: options.timeout) {
+                // NB: Most strategies complete synchronously, so only wait when the snapshot is still pending.
+                let result = actual != nil
+                    ? .completed
+                    : XCTWaiter.wait(for: [expectation], timeout: options.timeout)
+                switch result {
                     case .completed:
                         break
                     case .timedOut:
