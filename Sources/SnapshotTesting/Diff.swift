@@ -12,33 +12,53 @@ struct Difference<A> {
 }
 
 func diff<A: Hashable>(_ fst: [A], _ snd: [A]) -> [Difference<A>] {
+    var differences: [Difference<A>] = []
+    diff(fst[...], snd[...], into: &differences)
+    return differences
+}
+
+private func diff<A: Hashable>(
+    _ fst: ArraySlice<A>,
+    _ snd: ArraySlice<A>,
+    into differences: inout [Difference<A>]
+) {
     var idxsOf = [A: [Int]]()
-    fst.enumerated().forEach { idxsOf[$1, default: []].append($0) }
-
-    let sub = snd.enumerated().reduce((overlap: [Int: Int](), fst: 0, snd: 0, len: 0)) { sub, sndPair in
-        (idxsOf[sndPair.element] ?? [])
-            .reduce((overlap: [Int: Int](), fst: sub.fst, snd: sub.snd, len: sub.len)) { innerSub, fstIdx in
-
-                var newOverlap = innerSub.overlap
-                newOverlap[fstIdx] = (sub.overlap[fstIdx - 1] ?? 0) + 1
-
-                if let newLen = newOverlap[fstIdx], newLen > sub.len {
-                    return (newOverlap, fstIdx - newLen + 1, sndPair.offset - newLen + 1, newLen)
-                }
-                return (newOverlap, innerSub.fst, innerSub.snd, innerSub.len)
-            }
+    for fstIdx in fst.indices {
+        idxsOf[fst[fstIdx], default: []].append(fstIdx)
     }
-    let (_, fstIdx, sndIdx, len) = sub
+
+    // NB: Reuse two overlap rows in place; copying a row per match makes repeated lines very slow.
+    var previousOverlap = [Int: Int]()
+    var overlap = [Int: Int]()
+    var fstIdx = fst.startIndex
+    var sndIdx = snd.startIndex
+    var len = 0
+    for sndOffset in snd.indices {
+        let rowLen = len
+        overlap.removeAll(keepingCapacity: true)
+        for matchIdx in idxsOf[snd[sndOffset]] ?? [] {
+            let newLen = (previousOverlap[matchIdx - 1] ?? 0) + 1
+            overlap[matchIdx] = newLen
+            if newLen > rowLen {
+                fstIdx = matchIdx - newLen + 1
+                sndIdx = sndOffset - newLen + 1
+                len = newLen
+            }
+        }
+        swap(&previousOverlap, &overlap)
+    }
 
     if len == 0 {
-        let fstDiff = fst.isEmpty ? [] : [Difference(elements: fst, which: .first)]
-        let sndDiff = snd.isEmpty ? [] : [Difference(elements: snd, which: .second)]
-        return fstDiff + sndDiff
+        if !fst.isEmpty {
+            differences.append(Difference(elements: Array(fst), which: .first))
+        }
+        if !snd.isEmpty {
+            differences.append(Difference(elements: Array(snd), which: .second))
+        }
     } else {
-        let fstDiff = diff(Array(fst.prefix(upTo: fstIdx)), Array(snd.prefix(upTo: sndIdx)))
-        let midDiff = [Difference(elements: Array(fst.suffix(from: fstIdx).prefix(len)), which: .both)]
-        let lstDiff = diff(Array(fst.suffix(from: fstIdx + len)), Array(snd.suffix(from: sndIdx + len)))
-        return fstDiff + midDiff + lstDiff
+        diff(fst[..<fstIdx], snd[..<sndIdx], into: &differences)
+        differences.append(Difference(elements: Array(fst[fstIdx ..< fstIdx + len]), which: .both))
+        diff(fst[(fstIdx + len)...], snd[(sndIdx + len)...], into: &differences)
     }
 }
 
@@ -47,11 +67,11 @@ let plus = "+"
 private let figureSpace = "\u{2007}"
 
 struct Hunk {
-    let fstIdx: Int
-    let fstLen: Int
-    let sndIdx: Int
-    let sndLen: Int
-    let lines: [String]
+    var fstIdx: Int
+    var fstLen: Int
+    var sndIdx: Int
+    var sndLen: Int
+    var lines: [String]
 
     var patchMark: String {
         let fstMark = "\(minus)\(fstIdx + 1),\(fstLen)"
@@ -69,6 +89,14 @@ struct Hunk {
             sndLen: lhs.sndLen + rhs.sndLen,
             lines: lhs.lines + rhs.lines
         )
+    }
+
+    static func += (lhs: inout Hunk, rhs: Hunk) {
+        lhs.fstIdx += rhs.fstIdx
+        lhs.fstLen += rhs.fstLen
+        lhs.sndIdx += rhs.sndIdx
+        lhs.sndLen += rhs.sndLen
+        lhs.lines += rhs.lines
     }
 
     // Monoid
@@ -94,36 +122,40 @@ func chunk(diff diffs: [Difference<String>], context ctx: Int = 4) -> [Hunk] {
         $0.lines.contains(where: { $0.hasPrefix(minus) || $0.hasPrefix(plus) })
     }
 
-    let (hunk, hunks) =
-        diffs
-            .reduce((current: Hunk(), hunks: [Hunk]())) { cursor, diff in
-                let (current, hunks) = cursor
-                let len = diff.elements.count
+    var current = Hunk()
+    var hunks: [Hunk] = []
+    for diff in diffs {
+        let len = diff.elements.count
 
-                switch diff.which {
-                    case .both where len > ctx * 2:
-                        let hunk =
-                            current + Hunk(len: ctx, lines: diff.elements.prefix(ctx).map(prepending(figureSpace)))
-                        let next = Hunk(
-                            fstIdx: current.fstIdx + current.fstLen + len - ctx,
-                            fstLen: ctx,
-                            sndIdx: current.sndIdx + current.sndLen + len - ctx,
-                            sndLen: ctx,
-                            lines: (diff.elements.suffix(ctx) as ArraySlice<String>).map(prepending(figureSpace))
-                        )
-                        return (next, changed(hunk) ? hunks + [hunk] : hunks)
-                    case .both where current.lines.isEmpty:
-                        let lines = (diff.elements.suffix(ctx) as ArraySlice<String>).map(prepending(figureSpace))
-                        let count = lines.count
-                        return (current + Hunk(idx: len - count, len: count, lines: lines), hunks)
-                    case .both:
-                        return (current + Hunk(len: len, lines: diff.elements.map(prepending(figureSpace))), hunks)
-                    case .first:
-                        return (current + Hunk(fstLen: len, lines: diff.elements.map(prepending(minus))), hunks)
-                    case .second:
-                        return (current + Hunk(sndLen: len, lines: diff.elements.map(prepending(plus))), hunks)
+        switch diff.which {
+            case .both where len > ctx * 2:
+                let next = Hunk(
+                    fstIdx: current.fstIdx + current.fstLen + len - ctx,
+                    fstLen: ctx,
+                    sndIdx: current.sndIdx + current.sndLen + len - ctx,
+                    sndLen: ctx,
+                    lines: (diff.elements.suffix(ctx) as ArraySlice<String>).map(prepending(figureSpace))
+                )
+                current += Hunk(len: ctx, lines: diff.elements.prefix(ctx).map(prepending(figureSpace)))
+                if changed(current) {
+                    hunks.append(current)
                 }
-            }
+                current = next
+            case .both where current.lines.isEmpty:
+                let lines = (diff.elements.suffix(ctx) as ArraySlice<String>).map(prepending(figureSpace))
+                let count = lines.count
+                current += Hunk(idx: len - count, len: count, lines: lines)
+            case .both:
+                current += Hunk(len: len, lines: diff.elements.map(prepending(figureSpace)))
+            case .first:
+                current += Hunk(fstLen: len, lines: diff.elements.map(prepending(minus)))
+            case .second:
+                current += Hunk(sndLen: len, lines: diff.elements.map(prepending(plus)))
+        }
+    }
 
-    return changed(hunk) ? hunks + [hunk] : hunks
+    if changed(current) {
+        hunks.append(current)
+    }
+    return hunks
 }
