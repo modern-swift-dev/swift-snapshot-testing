@@ -215,6 +215,8 @@ public func diff<T>(_ lhs: T, _ rhs: T, format: DiffFormat = .default) -> String
             }
 
             let difference = rhsChildren.difference(from: lhsChildren, by: areEquivalent)
+            let removalOffsets = Set(difference.removals.map(\.offset))
+            let insertionOffsets = Set(difference.insertions.map(\.offset))
 
             var lhsOffset = 0
             var rhsOffset = 0
@@ -253,8 +255,8 @@ public func diff<T>(_ lhs: T, _ rhs: T, format: DiffFormat = .default) -> String
             }
 
             while lhsOffset < lhsChildren.count || rhsOffset < rhsChildren.count {
-                let isRemoval = difference.removals.contains(where: { $0.offset == lhsOffset })
-                let isInsertion = difference.insertions.contains(where: { $0.offset == rhsOffset })
+                let isRemoval = removalOffsets.contains(lhsOffset)
+                let isInsertion = insertionOffsets.contains(rhsOffset)
 
                 if collapseUnchanged,
                    !isRemoval,
