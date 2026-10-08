@@ -537,8 +537,19 @@ public struct SnapshotAssertionOptions: Sendable {
                 return "Couldn't snapshot value"
             }
 
+            // NB: Encoding can be expensive (e.g. PNG), so encode the snapshot at most once.
+            var cachedSnapshotData: Data?
+            @MainActor func encodedSnapshot() -> Data {
+                if let cachedSnapshotData {
+                    return cachedSnapshotData
+                }
+                let data = snapshotting.diffing.toData(diffable)
+                cachedSnapshotData = data
+                return data
+            }
+
             @MainActor func recordSnapshot(writeToDisk: Bool) throws {
-                let snapshotData = snapshotting.diffing.toData(diffable)
+                let snapshotData = encodedSnapshot()
 
                 if writeToDisk {
                     try snapshotData.write(to: snapshotFileUrl)
@@ -546,7 +557,7 @@ public struct SnapshotAssertionOptions: Sendable {
 
                 if isSwiftTesting {
                     recordSwiftTestingAttachment(
-                        writeToDisk ? try Data(contentsOf: snapshotFileUrl) : snapshotData,
+                        snapshotData,
                         named: snapshotFileUrl.lastPathComponent,
                         sourceLocation: SourceLocation(
                             fileID: fileID.description,
@@ -593,7 +604,7 @@ public struct SnapshotAssertionOptions: Sendable {
                 let failedSnapshotFileUrl = artifactsSubUrl.appendingPathComponent(
                     snapshotFileUrl.lastPathComponent
                 )
-                try snapshotting.diffing.toData(diffable).write(to: failedSnapshotFileUrl)
+                try encodedSnapshot().write(to: failedSnapshotFileUrl)
                 return failedSnapshotFileUrl
             }
 

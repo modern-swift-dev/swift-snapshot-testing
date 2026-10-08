@@ -117,14 +117,29 @@
                                 new = renderedUp(new)
                             #endif
                     }
+                    // NB: Encode the new image at most once; comparison and failure artifacts share it.
+                    var cachedNewPNGData: Data?
+                    func newPNGData() -> Data? {
+                        if cachedNewPNGData == nil {
+                            cachedNewPNGData = new.pngData()
+                        }
+                        return cachedNewPNGData
+                    }
                     guard let message = compare(
-                        old, new, precision: precision, perceptualPrecision: perceptualPrecision
+                        old,
+                        new,
+                        newPNGData: newPNGData,
+                        precision: precision,
+                        perceptualPrecision: perceptualPrecision
                     ) else {
                         return nil
                     }
-                    let difference = SnapshotTesting.diff(old, new)
+                    let difference = SnapshotTesting.diff(old, new, newPNGData: newPNGData())
                     let referenceAttachment = DiffAttachment.data(toData(old), name: "reference.png")
-                    let failureAttachment = DiffAttachment.data(toData(new), name: "failure.png")
+                    let failureAttachment = DiffAttachment.data(
+                        newPNGData() ?? toData(new),
+                        name: "failure.png"
+                    )
                     let differenceAttachment = DiffAttachment.data(toData(difference), name: "difference.png")
                     return (
                         message,
@@ -294,8 +309,13 @@
     private let imageContextBitsPerComponent = 8
     private let imageContextBytesPerPixel = 4
 
-    private func compare(_ old: UIImage, _ new: UIImage, precision: Float, perceptualPrecision: Float)
-        -> String? {
+    private func compare(
+        _ old: UIImage,
+        _ new: UIImage,
+        newPNGData: () -> Data?,
+        precision: Float,
+        perceptualPrecision: Float
+    ) -> String? {
         guard let oldCgImage = old.cgImage else {
             return "Reference image could not be loaded."
         }
@@ -319,7 +339,7 @@
                 return nil
             }
         }
-        guard let pngData = new.pngData(),
+        guard let pngData = newPNGData(),
               let newerCgImage = UIImage(data: pngData)?.cgImage,
               let newerContext = context(for: newerCgImage),
               let newerData = newerContext.data else {
@@ -388,12 +408,12 @@
         return context
     }
 
-    private func diff(_ old: UIImage, _ new: UIImage) -> UIImage {
+    private func diff(_ old: UIImage, _ new: UIImage, newPNGData: Data?) -> UIImage {
         #if os(watchOS)
             // ponytail: Size mismatches attach the failure image; add a Core Graphics compositor if needed.
-            normalizedComponentDiff(old, new) ?? new
+            normalizedComponentDiff(old, new, newPNGData: newPNGData) ?? new
         #else
-            normalizedComponentDiff(old, new)
+            normalizedComponentDiff(old, new, newPNGData: newPNGData)
                 ?? blendModeDiff(old, new)
         #endif
     }
@@ -414,9 +434,9 @@
         }
     #endif
 
-    private func normalizedComponentDiff(_ old: UIImage, _ new: UIImage) -> UIImage? {
+    private func normalizedComponentDiff(_ old: UIImage, _ new: UIImage, newPNGData: Data?) -> UIImage? {
         guard let oldCgImage = old.cgImage,
-              let pngData = new.pngData(),
+              let pngData = newPNGData,
               let newCgImage = UIImage(data: pngData)?.cgImage,
               oldCgImage.width == newCgImage.width,
               oldCgImage.height == newCgImage.height else {

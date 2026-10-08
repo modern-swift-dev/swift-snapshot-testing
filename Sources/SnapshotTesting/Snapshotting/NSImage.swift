@@ -16,8 +16,17 @@
                 toData: { requirePNGData($0) },
                 fromDataOptional: { NSImage(data: $0) },
                 diffV2: { old, new in
+                    // NB: Encode the new image at most once; comparison and failure artifacts share it.
+                    var cachedNewPNGData: Data?
+                    func newPNGData() -> Data? {
+                        if cachedNewPNGData == nil {
+                            cachedNewPNGData = NSImagePNGRepresentation(new)
+                        }
+                        return cachedNewPNGData
+                    }
                     guard let message = compare(
                         old, new,
+                        newPNGData: newPNGData,
                         precision: options.precision,
                         perceptualPrecision: options.perceptualPrecision
                     ) else {
@@ -29,7 +38,7 @@
                         name: "reference.png"
                     )
                     let newAttachment = DiffAttachment.data(
-                        requirePNGData(new),
+                        newPNGData() ?? requirePNGData(new),
                         name: "failure.png"
                     )
                     let differenceAttachment = DiffAttachment.data(
@@ -142,8 +151,13 @@
         return data
     }
 
-    private func compare(_ old: NSImage, _ new: NSImage, precision: Float, perceptualPrecision: Float)
-        -> String? {
+    private func compare(
+        _ old: NSImage,
+        _ new: NSImage,
+        newPNGData: () -> Data?,
+        precision: Float,
+        perceptualPrecision: Float
+    ) -> String? {
         guard let oldCgImage = old.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
             return "Reference image could not be loaded."
         }
@@ -166,7 +180,7 @@
         if memcmp(oldData, newData, byteCount) == 0 {
             return nil
         }
-        guard let pngData = NSImagePNGRepresentation(new),
+        guard let pngData = newPNGData(),
               let newerCgImage = NSImage(data: pngData)?.cgImage(
                   forProposedRect: nil, context: nil, hints: nil
               ),
