@@ -525,15 +525,20 @@
     import CoreImage.CIKernel
     import MetalPerformanceShaders
 
+    // Setting the working color space and output color space to NSNull disables color management. This is appropriate when the output
+    // of the operations is computational instead of an image intended to be displayed.
+    // NB: Creating a context is expensive, so share one. Core Image contexts are safe to share across threads.
+    private let perceptualComparisonContext = CIContext(
+        options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()]
+    )
+
     @available(iOS 10.0, tvOS 10.0, macOS 10.13, *) func perceptuallyCompare(
         _ old: CIImage, _ new: CIImage, pixelPrecision: Float, perceptualPrecision: Float
     ) -> String? {
         // Calculate the deltaE values. Each pixel is a value between 0-100.
         // 0 means no difference, 100 means completely opposite.
         let deltaOutputImage = old.applyingLabDeltaE(new)
-        // Setting the working color space and output color space to NSNull disables color management. This is appropriate when the output
-        // of the operations is computational instead of an image intended to be displayed.
-        let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+        let context = perceptualComparisonContext
         let deltaThreshold = (1 - perceptualPrecision) * 100
         let actualPixelPrecision: Float
         var maximumDeltaE: Float = 0
