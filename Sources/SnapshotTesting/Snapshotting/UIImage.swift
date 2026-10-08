@@ -310,8 +310,7 @@
         }
         let pixelCount = oldCgImage.width * oldCgImage.height
         let byteCount = imageContextBytesPerPixel * pixelCount
-        var oldBytes = [UInt8](repeating: 0, count: byteCount)
-        guard let oldContext = context(for: oldCgImage, data: &oldBytes),
+        guard let oldContext = context(for: oldCgImage),
               let oldData = oldContext.data else {
             return "Reference image's data could not be loaded."
         }
@@ -320,10 +319,9 @@
                 return nil
             }
         }
-        var newerBytes = [UInt8](repeating: 0, count: byteCount)
         guard let pngData = new.pngData(),
               let newerCgImage = UIImage(data: pngData)?.cgImage,
-              let newerContext = context(for: newerCgImage, data: &newerBytes),
+              let newerContext = context(for: newerCgImage),
               let newerData = newerContext.data else {
             return "Newly-taken snapshot's data could not be loaded."
         }
@@ -347,17 +345,21 @@
                 )
             }
         #endif
+        let oldBytes = oldData.assumingMemoryBound(to: UInt8.self)
+        let newerBytes = newerData.assumingMemoryBound(to: UInt8.self)
         let byteCountThreshold = Int((1 - precision) * Float(byteCount))
         var differentByteCount = 0
-        // NB: We are purposely using a verbose 'while' loop instead of a 'for in' loop.  When the
-        //     compiler doesn't have optimizations enabled, like in test targets, a `while` loop is
-        //     significantly faster than a `for` loop for iterating through the elements of a memory
+        // NB: We are purposely using a verbose 'while' loop over raw pointers instead of a 'for in'
+        //     loop over arrays. When the compiler doesn't have optimizations enabled, like in test
+        //     targets, this is significantly faster for iterating through the elements of a memory
         //     buffer. Details can be found in [SR-6983](https://github.com/apple/swift/issues/49531)
         var index = 0
-        while index < byteCount {
-            defer { index += 1 }
-            if oldBytes[index] != newerBytes[index] {
-                differentByteCount += 1
+        withExtendedLifetime((oldContext, newerContext)) {
+            while index < byteCount {
+                defer { index += 1 }
+                if oldBytes[index] != newerBytes[index] {
+                    differentByteCount += 1
+                }
             }
         }
         if differentByteCount > byteCountThreshold {
@@ -367,11 +369,11 @@
         return nil
     }
 
-    private func context(for cgImage: CGImage, data: UnsafeMutableRawPointer? = nil) -> CGContext? {
+    private func context(for cgImage: CGImage) -> CGContext? {
         let bytesPerRow = cgImage.width * imageContextBytesPerPixel
         guard let colorSpace = imageContextColorSpace,
               let context = CGContext(
-                  data: data,
+                  data: nil,
                   width: cgImage.width,
                   height: cgImage.height,
                   bitsPerComponent: imageContextBitsPerComponent,
@@ -434,39 +436,47 @@
         let width = oldCgImage.width
         let height = oldCgImage.height
         let pixelCount = width * height
-        let byteCount = pixelCount * imageContextBytesPerPixel
         let scale = old.scale
 
-        var oldBytes = [UInt8](repeating: 0, count: byteCount)
-        var newBytes = [UInt8](repeating: 0, count: byteCount)
-        guard context(for: oldCgImage, data: &oldBytes) != nil,
-              context(for: newCgImage, data: &newBytes) != nil else {
+        guard let oldContext = context(for: oldCgImage),
+              let oldData = oldContext.data,
+              let newContext = context(for: newCgImage),
+              let newData = newContext.data else {
             return nil
         }
+        let oldBytes = oldData.assumingMemoryBound(to: UInt8.self)
+        let newBytes = newData.assumingMemoryBound(to: UInt8.self)
         var diffBytes = [UInt8](repeating: 0, count: pixelCount)
+        withExtendedLifetime((oldContext, newContext)) {
+            diffBytes.withUnsafeMutableBufferPointer { diffBuffer in
+                guard let diffPixels = diffBuffer.baseAddress else {
+                    return
+                }
 
-        var index = 0
-        while index < pixelCount {
-            defer { index += 1 }
-            let pixelOffset = index * imageContextBytesPerPixel
+                var index = 0
+                while index < pixelCount {
+                    defer { index += 1 }
+                    let pixelOffset = index * imageContextBytesPerPixel
 
-            let rOld = Int16(oldBytes[pixelOffset])
-            let gOld = Int16(oldBytes[pixelOffset + 1])
-            let bOld = Int16(oldBytes[pixelOffset + 2])
-            let aOld = Int16(oldBytes[pixelOffset + 3])
+                    let rOld = Int16(oldBytes[pixelOffset])
+                    let gOld = Int16(oldBytes[pixelOffset + 1])
+                    let bOld = Int16(oldBytes[pixelOffset + 2])
+                    let aOld = Int16(oldBytes[pixelOffset + 3])
 
-            let rNew = Int16(newBytes[pixelOffset])
-            let gNew = Int16(newBytes[pixelOffset + 1])
-            let bNew = Int16(newBytes[pixelOffset + 2])
-            let aNew = Int16(newBytes[pixelOffset + 3])
+                    let rNew = Int16(newBytes[pixelOffset])
+                    let gNew = Int16(newBytes[pixelOffset + 1])
+                    let bNew = Int16(newBytes[pixelOffset + 2])
+                    let aNew = Int16(newBytes[pixelOffset + 3])
 
-            let rDiff = abs(rOld - rNew)
-            let gDiff = abs(gOld - gNew)
-            let bDiff = abs(bOld - bNew)
-            let aDiff = abs(aOld - aNew)
+                    let rDiff = abs(rOld - rNew)
+                    let gDiff = abs(gOld - gNew)
+                    let bDiff = abs(bOld - bNew)
+                    let aDiff = abs(aOld - aNew)
 
-            let maxDiff = max(rDiff, gDiff, bDiff, aDiff)
-            diffBytes[index] = UInt8(maxDiff)
+                    let maxDiff = max(rDiff, gDiff, bDiff, aDiff)
+                    diffPixels[index] = UInt8(maxDiff)
+                }
+            }
         }
 
         let outputCgImage: CGImage? = diffBytes.withUnsafeMutableBytes { diffPtr in
